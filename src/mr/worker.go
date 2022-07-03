@@ -1,10 +1,15 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"net/rpc"
+	"os"
+	"sort"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -13,6 +18,13 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -24,7 +36,6 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
 //
 // main/mrworker.go calls this function.
 //
@@ -35,7 +46,105 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
+	args := WorkArgs{}
+	reply := WorkReply{}
+	call("Coordinator.Work", &args, &reply)
 
+	var ts = reply.Ts
+	switch ts.Ctg {
+	case "map":
+		nbucket, ok := ts.Ext.(int)
+		if !ok {
+			return
+		}
+		num := ts.Seq
+		filename := ts.Detail[0]
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		content, err := ioutil.ReadAll(file)
+		if err != nil {
+			log.Fatalf("cannot read %v", filename)
+		}
+		file.Close()
+		kva := mapf(filename, string(content))
+		sort.Sort(ByKey(kva))
+		for _, kv := range kva {
+			i := ihash(kv.Key) % nbucket
+			oname := fmt.Sprintf("mr-%d-%d", num, i)
+			ofile, err := os.OpenFile(oname, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0777)
+			if err != nil {
+				log.Fatalf("cannot create %v", oname)
+			}
+			enc := json.NewEncoder(ofile)
+			err1 := enc.Encode(&kv)
+			if err1 != nil {
+				return
+			}
+			ofile.Close()
+		}
+		CallDone("map", num)
+		return
+	case "reduce":
+		nmap, ok := ts.Ext.(int)
+		if !ok {
+			return
+		}
+		num := ts.Seq - nmap
+		kva := []KeyValue{}
+		for _, filename := range ts.Detail {
+			file, err := os.Open(filename)
+			if err != nil {
+				log.Fatalf("cannot open %v", filename)
+			}
+
+			dec := json.NewDecoder(file)
+			for {
+				var kv KeyValue
+				if err := dec.Decode(&kv); err != nil {
+					break
+				}
+				kva = append(kva, kv)
+			}
+		}
+		sort.Sort(ByKey(kva))
+		oname := fmt.Sprintf("mr-out-%v", num)
+		ofile, _ := os.Create(oname)
+
+		i := 0
+		for i < len(kva) {
+			j := i + 1
+			for j < len(kva) && kva[j].Key == kva[i].Key {
+				j++
+			}
+			values := []string{}
+			for k := i; k < j; k++ {
+				values = append(values, kva[k].Value)
+			}
+			output := reducef(kva[i].Key, values)
+
+			// this is the correct format for each line of Reduce output.
+			fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+
+			i = j
+		}
+		ofile.Close()
+		CallDone("reduce", ts.Seq)
+		return
+
+	default:
+		return
+	}
+
+}
+
+func CallDone(work string, seq int) {
+	args := WorkArgs{}
+	args.S = work
+	args.Seq = seq
+	reply := WorkReply{}
+	call("Coordinator.WorkDone", &args, &reply)
 }
 
 //
