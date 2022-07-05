@@ -1,8 +1,6 @@
 package mr
 
 import (
-	"errors"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -14,12 +12,18 @@ import (
 
 type Coordinator struct {
 	// Your definitions here.
-	files   []string
-	Task    []int
+	// files name to parse
+	files []string
+	// files by map for reduce
+	reduceFiles [][]string
+	// task status, 0 not allocated, 1 allocated, 2 done, elements totally nReduce + nMap + 2, the second to last is all done task nums.
+	// the last one is all allocated nums
+	staTask []int
+	// reduce task nums, specified by coordinator main func
 	nReduce int
-	nMap    int
-	numTask int
-	cond    *sync.Cond
+	// map task nums, equal to files nums
+	nMap int
+	cond *sync.Cond
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -35,6 +39,7 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) Work(args *WorkArgs, reply *WorkReply) error {
+	log.SetFlags(log.Lshortfile)
 	ts := c.allocTask()
 	if ts != nil {
 		reply.Ts = *ts
@@ -44,37 +49,39 @@ func (c *Coordinator) Work(args *WorkArgs, reply *WorkReply) error {
 			time.Sleep(10 * time.Second)
 			c.cond.L.Lock()
 			defer c.cond.L.Unlock()
-			if c.Task[seq] != 2 {
-				c.Task[seq] = 0
+			if c.staTask[seq] != 2 {
+				c.staTask[seq] = 0
+				c.staTask[c.nMap+c.nReduce+1]--
+				c.cond.Broadcast()
 			}
 		}()
 	} else {
-		reply.Ts = Task{}
-		reply.Error = errors.New("no more work")
+		reply.Ts = Task{Ctg: "exit"}
 	}
 	return nil
 }
 
 func (c *Coordinator) allocTask() *Task {
+	log.SetFlags(log.Lshortfile)
 	for {
 		c.cond.L.Lock()
-		if c.numTask < len(c.files) {
-			for i, b := range c.Task[:c.nMap] {
+		if c.staTask[c.nMap+c.nReduce+1] < c.nMap {
+			for i, b := range c.staTask[:c.nMap] {
 				if b == 0 {
-					c.Task[i] = 1
+					c.staTask[i] = 1
 					ts := new(Task)
 					*ts = Task{Ctg: "map", Detail: []string{c.files[i]}, Seq: i, Ext: c.nReduce}
-					c.numTask++
+					c.staTask[c.nMap+c.nReduce+1]++
 					c.cond.L.Unlock()
 					return ts
 				}
 			}
 		}
-		for c.numTask == c.nMap && c.Task[c.nMap+c.nReduce] < c.nMap {
+		for c.staTask[c.nMap+c.nReduce+1] == c.nMap && c.staTask[c.nMap+c.nReduce] < c.nMap {
 			c.cond.Wait()
 		}
 
-		if c.Task[c.nMap+c.nReduce] >= c.nMap {
+		if c.staTask[c.nMap+c.nReduce] >= c.nMap {
 			c.cond.L.Unlock()
 			break
 		}
@@ -83,47 +90,48 @@ func (c *Coordinator) allocTask() *Task {
 
 	for {
 		c.cond.L.Lock()
-		if c.numTask < c.nMap+c.nReduce {
-			for i, b := range c.Task[c.nMap : c.nMap+c.nReduce] {
+		if c.staTask[c.nMap+c.nReduce+1] < c.nMap+c.nReduce {
+			for i, b := range c.staTask[c.nMap : c.nMap+c.nReduce] {
 				if b == 0 {
-					c.Task[c.nMap+i] = 1
+					c.staTask[c.nMap+i] = 1
 					ts := new(Task)
-					pathStr := make([]string, c.nMap)
-					for j, _ := range pathStr {
-						pathStr[j] = fmt.Sprintf("mr-%v-%v", j, i)
-					}
 
-					*ts = Task{Ctg: "reduce", Detail: pathStr, Seq: i + c.nMap, Ext: c.nMap}
-					c.numTask++
+					*ts = Task{Ctg: "reduce", Detail: c.reduceFiles[i], Seq: i + c.nMap, Ext: c.nMap}
+					c.staTask[c.nMap+c.nReduce+1]++
 					c.cond.L.Unlock()
 					return ts
 				}
 			}
 		}
-		for c.numTask == c.nMap+c.nReduce && c.Task[c.nMap+c.nReduce] < c.nMap+c.nReduce {
+		for c.staTask[c.nMap+c.nReduce+1] == c.nMap+c.nReduce && c.staTask[c.nMap+c.nReduce] < c.nMap+c.nReduce {
 			c.cond.Wait()
 		}
 
-		if c.Task[c.nMap+c.nReduce] == c.nMap+c.nReduce {
+		if c.staTask[c.nMap+c.nReduce] == c.nMap+c.nReduce {
 			c.cond.L.Unlock()
 			break
 		}
+		c.cond.L.Unlock()
 	}
 
 	return nil
 }
 
 func (c *Coordinator) WorkDone(args *WorkArgs, reply *WorkReply) error {
+	log.SetFlags(log.Lshortfile)
 	num := args.Seq
-
+	work := args.S
 	c.cond.L.Lock()
-	if c.Task[num] == 0 || c.Task[num] == 2 {
-		c.cond.L.Unlock()
-	} else if c.Task[num] == 1 {
-		c.Task[num] = 2
-		c.Task[c.nMap+c.nReduce]++
+	defer c.cond.L.Unlock()
+	if work == "map" {
+		for filename, seq := range args.Ext {
+			c.reduceFiles[seq] = append(c.reduceFiles[seq], filename)
+		}
+	}
+	if c.staTask[num] == 1 {
+		c.staTask[num] = 2
+		c.staTask[c.nMap+c.nReduce]++
 		c.cond.Broadcast()
-		c.cond.L.Unlock()
 	}
 
 	return nil
@@ -154,7 +162,7 @@ func (c *Coordinator) Done() bool {
 	// Your code here.
 	c.cond.L.Lock()
 	defer c.cond.L.Unlock()
-	if c.Task[c.nMap+c.nReduce] == c.nMap+c.nReduce {
+	if c.staTask[c.nMap+c.nReduce] == c.nMap+c.nReduce {
 		ret = true
 	}
 
@@ -175,7 +183,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.nReduce = nReduce
 	c.nMap = len(files)
 	c.cond = sync.NewCond(&sync.Mutex{})
-	c.Task = make([]int, c.nMap+c.nReduce+1)
+	c.staTask = make([]int, c.nMap+c.nReduce+2)
+	c.reduceFiles = make([][]string, c.nReduce)
 	// Your code here.
 
 	c.server()

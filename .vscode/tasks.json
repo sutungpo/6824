@@ -1,0 +1,80 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "options": {
+        "env": {
+            "RACE": "-race",
+        }
+    },
+    "tasks": [
+        {
+            "label": "mrcoordinator",
+            "type": "shell",
+            "command": "cd ~/Downloads/dist/6.824/src/main && go build $RACE -gcflags=all='-N -l' mrcoordinator.go",
+            "problemMatcher": [],
+            "dependsOn":["mrworker", "mrsequential", "plugin wc"]
+        },
+        {
+            "label": "mrworker",
+            "type": "shell",
+            "command": "cd ~/Downloads/dist/6.824/src/main && go build $RACE -gcflags=all='-N -l'  mrworker.go",
+            "problemMatcher": [],
+        },
+        {
+            "label": "mrsequential",
+            "type": "shell",
+            "command": "cd ~/Downloads/dist/6.824/src/main && go build $RACE -gcflags=all='-N -l' mrsequential.go",
+            "problemMatcher": [],
+        },
+        {
+            "label": "plugin wc",
+            "type": "shell",
+            "command": "cd ~/Downloads/dist/6.824/src/mrapps && go build $RACE -gcflags=all='-N -l' -buildmode=plugin wc.go",
+            "problemMatcher": [],
+            "dependsOn":["plugin indexer","plugin mtiming", "plugin rtiming", "plugin jobcount", "plugin early_exit", "plugin crash", "plugin nocrash"]
+        },
+        {
+            "label": "plugin index",
+            "type": "shell",
+            "command": "cd ~/Downloads/dist/6.824/src/mrapps && go build $RACE -gcflags=all='-N -l' -buildmode=plugin indexer.go",
+            "problemMatcher": []
+        },
+        {
+            "label": "plugin mtiming",
+            "type": "shell",
+            "command": "cd ~/Downloads/dist/6.824/src/mrapps && go build $RACE -gcflags=all='-N -l' -buildmode=plugin mtiming.go",
+            "problemMatcher": []
+        },
+        {
+            "label": "plugin rtiming",
+            "type": "shell",
+            "command": "cd ~/Downloads/dist/6.824/src/mrapps && go build $RACE -gcflags=all='-N -l' -buildmode=plugin rtiming.go",
+            "problemMatcher": []
+        },
+        {
+            "label": "plugin jobcount",
+            "type": "shell",
+            "command": "cd ~/Downloads/dist/6.824/src/mrapps && go build $RACE -gcflags=all='-N -l' -buildmode=plugin jobcount.go",
+            "problemMatcher": []
+        },
+        {
+            "label": "plugin early",
+            "type": "shell",
+            "command": "cd ~/Downloads/dist/6.824/src/mrapps && go build $RACE -gcflags=all='-N -l' -buildmode=plugin early_exit.go",
+            "problemMatcher": []
+        },
+        {
+            "label": "plugin crash",
+            "type": "shell",
+            "command": "cd ~/Downloads/dist/6.824/src/mrapps && go build $RACE -gcflags=all='-N -l' -buildmode=plugin crash.go",
+            "problemMatcher": []
+        },
+        {
+            "label": "plugin nocrash",
+            "type": "shell",
+            "command": "cd ~/Downloads/dist/6.824/src/mrapps && go build $RACE -gcflags=all='-N -l' -buildmode=plugin nocrash.go",
+            "problemMatcher": []
+        }
+    ]
+}

@@ -27,6 +27,7 @@ type ExampleReply struct {
 type WorkArgs struct {
 	S   string
 	Seq int
+	Ext map[string]int
 }
 
 type WorkReply struct {

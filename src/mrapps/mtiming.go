@@ -7,14 +7,17 @@ package main
 // go build -buildmode=plugin mtiming.go
 //
 
-import "6.824/mr"
-import "strings"
-import "fmt"
-import "os"
-import "syscall"
-import "time"
-import "sort"
-import "io/ioutil"
+import (
+	"fmt"
+	"io/ioutil"
+	"os"
+	"sort"
+	"strings"
+	"syscall"
+	"time"
+
+	"6.824/mr"
+)
 
 func nparallel(phase string) int {
 	// create a file so that other workers will see that
@@ -65,7 +68,6 @@ func Map(filename string, contents string) []mr.KeyValue {
 	t0 := time.Now()
 	ts := float64(t0.Unix()) + (float64(t0.Nanosecond()) / 1000000000.0)
 	pid := os.Getpid()
-
 	n := nparallel("map")
 
 	kva := []mr.KeyValue{}

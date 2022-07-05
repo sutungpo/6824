@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"path/filepath"
 	"sort"
 )
 
@@ -41,108 +42,119 @@ func ihash(key string) int {
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-
+	log.SetFlags(log.Lshortfile)
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
-	args := WorkArgs{}
-	reply := WorkReply{}
-	call("Coordinator.Work", &args, &reply)
-
-	var ts = reply.Ts
-	switch ts.Ctg {
-	case "map":
-		nbucket, ok := ts.Ext.(int)
-		if !ok {
-			return
-		}
-		num := ts.Seq
-		filename := ts.Detail[0]
-		file, err := os.Open(filename)
-		if err != nil {
-			log.Fatalf("cannot open %v", filename)
-		}
-		content, err := ioutil.ReadAll(file)
-		if err != nil {
-			log.Fatalf("cannot read %v", filename)
-		}
-		file.Close()
-		kva := mapf(filename, string(content))
-		sort.Sort(ByKey(kva))
-		for _, kv := range kva {
-			i := ihash(kv.Key) % nbucket
-			oname := fmt.Sprintf("mr-%d-%d", num, i)
-			ofile, err := os.OpenFile(oname, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0777)
-			if err != nil {
-				log.Fatalf("cannot create %v", oname)
-			}
-			enc := json.NewEncoder(ofile)
-			err1 := enc.Encode(&kv)
-			if err1 != nil {
+	for {
+		args := WorkArgs{}
+		reply := WorkReply{}
+		call("Coordinator.Work", &args, &reply)
+		var ts = reply.Ts
+		switch ts.Ctg {
+		case "map":
+			nbucket, ok := ts.Ext.(int)
+			if !ok {
 				return
 			}
-			ofile.Close()
-		}
-		CallDone("map", num)
-		return
-	case "reduce":
-		nmap, ok := ts.Ext.(int)
-		if !ok {
-			return
-		}
-		num := ts.Seq - nmap
-		kva := []KeyValue{}
-		for _, filename := range ts.Detail {
+			num := ts.Seq
+			filename := ts.Detail[0]
 			file, err := os.Open(filename)
 			if err != nil {
 				log.Fatalf("cannot open %v", filename)
 			}
-
-			dec := json.NewDecoder(file)
-			for {
-				var kv KeyValue
-				if err := dec.Decode(&kv); err != nil {
-					break
+			content, err := ioutil.ReadAll(file)
+			if err != nil {
+				log.Fatalf("cannot read %v", filename)
+			}
+			file.Close()
+			kva := mapf(filename, string(content))
+			sort.Sort(ByKey(kva))
+			oldname := fmt.Sprintf("mr-%d*", num)
+			files, err := filepath.Glob(oldname)
+			if err != nil {
+				log.Fatalf("incorrect pattern")
+			}
+			for _, f := range files {
+				if err := os.Remove(f); err != nil {
+					log.Fatalf("incorrect path")
 				}
-				kva = append(kva, kv)
 			}
+			set := make(map[string]int)
+			for _, kv := range kva {
+				i := ihash(kv.Key) % nbucket
+				oname := fmt.Sprintf("mr-%d-%d", num, i)
+				ofile, err := os.OpenFile(oname, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0777)
+				if err != nil {
+					log.Fatalf("cannot create %v", oname)
+				}
+				set[oname] = i
+				enc := json.NewEncoder(ofile)
+				err1 := enc.Encode(&kv)
+				if err1 != nil {
+					log.Fatalf("json encode error!")
+					return
+				}
+				ofile.Close()
+			}
+			CallDone("map", num, set)
+		case "reduce":
+			nmap, ok := ts.Ext.(int)
+			if !ok {
+				return
+			}
+			num := ts.Seq - nmap
+			kva := []KeyValue{}
+			for _, filename := range ts.Detail {
+				file, err := os.Open(filename)
+				if err != nil {
+					log.Fatalf("cannot open %v", filename)
+				}
+
+				dec := json.NewDecoder(file)
+				for {
+					var kv KeyValue
+					if err := dec.Decode(&kv); err != nil {
+						break
+					}
+					kva = append(kva, kv)
+				}
+			}
+			sort.Sort(ByKey(kva))
+			oname := fmt.Sprintf("mr-out-%v", num)
+			ofile, _ := os.Create(oname)
+			i := 0
+			for i < len(kva) {
+				j := i + 1
+				for j < len(kva) && kva[j].Key == kva[i].Key {
+					j++
+				}
+				values := []string{}
+				for k := i; k < j; k++ {
+					values = append(values, kva[k].Value)
+				}
+				output := reducef(kva[i].Key, values)
+
+				// this is the correct format for each line of Reduce output.
+				fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+
+				i = j
+			}
+			ofile.Close()
+			CallDone("reduce", ts.Seq, nil)
+		default:
+			return
 		}
-		sort.Sort(ByKey(kva))
-		oname := fmt.Sprintf("mr-out-%v", num)
-		ofile, _ := os.Create(oname)
-
-		i := 0
-		for i < len(kva) {
-			j := i + 1
-			for j < len(kva) && kva[j].Key == kva[i].Key {
-				j++
-			}
-			values := []string{}
-			for k := i; k < j; k++ {
-				values = append(values, kva[k].Value)
-			}
-			output := reducef(kva[i].Key, values)
-
-			// this is the correct format for each line of Reduce output.
-			fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
-
-			i = j
-		}
-		ofile.Close()
-		CallDone("reduce", ts.Seq)
-		return
-
-	default:
-		return
 	}
 
 }
 
-func CallDone(work string, seq int) {
+func CallDone(work string, seq int, m map[string]int) {
 	args := WorkArgs{}
 	args.S = work
 	args.Seq = seq
+	args.Ext = m
 	reply := WorkReply{}
 	call("Coordinator.WorkDone", &args, &reply)
 }
